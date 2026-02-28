@@ -1,0 +1,10 @@
+[project]
+name = "canoe-ctrl"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "py-canoe>=26.0.2",
+    "flask>=3.0.0",
+]

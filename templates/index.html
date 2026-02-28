@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CANoe 灯光控制</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            color: #fff;
+            margin-bottom: 10px;
+            font-size: 2rem;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+        }
+
+        .signal-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .signal-card {
+            background: #2a2a2a;
+            border-radius: 8px;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 1px solid #3a3a3a;
+        }
+
+        .signal-card:hover {
+            background: #333;
+        }
+
+        .lamp {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: #333;
+            margin-bottom: 10px;
+            border: 2px solid #444;
+            transition: all 0.2s ease;
+        }
+
+        .signal-card.on .lamp {
+            background: #ffeb3b;
+            border-color: #ffeb3b;
+            box-shadow: 0 0 20px #ffeb3b, 0 0 40px rgba(255, 235, 59, 0.5);
+        }
+
+        .signal-card.on .lamp-icon {
+            display: none;
+        }
+
+        .signal-card.on .lamp-off-icon {
+            display: block;
+        }
+
+        .lamp-icon, .lamp-off-icon {
+            display: none;
+            width: 100%;
+            height: 100%;
+            line-height: 46px;
+            text-align: center;
+            font-size: 20px;
+        }
+
+        .lamp-off-icon {
+            color: #333;
+        }
+
+        .signal-info {
+            text-align: center;
+        }
+
+        .signal-name {
+            color: #ccc;
+            font-size: 0.9rem;
+            margin-bottom: 3px;
+            font-weight: 600;
+        }
+
+        .signal-desc {
+            color: #666;
+            font-size: 0.75rem;
+        }
+
+        .signal-card.on .signal-name {
+            color: #ffeb3b;
+        }
+
+        .signal-card.on .signal-desc {
+            color: #ffeb3b;
+            opacity: 0.8;
+        }
+
+        .toggle-btn {
+            display: none;
+        }
+
+        .status {
+            text-align: center;
+            color: #888;
+            font-size: 0.9rem;
+        }
+
+        .status.error {
+            color: #dc3545;
+        }
+
+        .status.success {
+            color: #28a745;
+        }
+
+        .footer {
+            text-align: center;
+            color: #555;
+            font-size: 0.8rem;
+            margin-top: 40px;
+        }
+
+        .loading {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>CANoe 灯光控制</h1>
+        <p class="subtitle">点击卡片切换灯光状态</p>
+
+        <div class="signal-grid" id="signalGrid">
+            {% for signal, desc in signals.items() %}
+            <div class="signal-card" data-signal="{{ signal }}" onclick="toggleSignal('{{ signal }}')">
+                <div class="lamp">
+                    <div class="lamp-icon">💡</div>
+                    <div class="lamp-off-icon">○</div>
+                </div>
+                <div class="signal-info">
+                    <div class="signal-name">{{ signal }}</div>
+                    <div class="signal-desc">{{ desc }}</div>
+                </div>
+                <button class="toggle-btn" id="btn-{{ signal }}"></button>
+            </div>
+            {% endfor %}
+        </div>
+
+        <p class="status" id="status">正在读取信号状态...</p>
+
+        <div class="footer">
+            请确保 CANoe 已启动并正在测量
+        </div>
+    </div>
+
+    <script>
+        // 页面加载时获取所有信号状态
+        document.addEventListener('DOMContentLoaded', function() {
+            fetchSignals();
+        });
+
+        // 定期刷新信号状态 (每500毫秒)
+        setInterval(fetchSignals, 500);
+
+        function fetchSignals() {
+            fetch('/api/get_all_signals')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        updateButtons(data.signals);
+                        document.getElementById('status').textContent = '状态已更新';
+                        document.getElementById('status').className = 'status';
+                    } else {
+                        document.getElementById('status').textContent = '读取失败: ' + data.message;
+                        document.getElementById('status').className = 'status error';
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('status').textContent = '请求失败: ' + error;
+                    document.getElementById('status').className = 'status error';
+                });
+        }
+
+        function updateButtons(signals) {
+            for (const [signal, value] of Object.entries(signals)) {
+                const card = document.querySelector(`[data-signal="${signal}"]`);
+                if (card) {
+                    if (value === 1) {
+                        card.classList.add('on');
+                    } else {
+                        card.classList.remove('on');
+                    }
+                }
+            }
+        }
+
+        function toggleSignal(signal) {
+            const card = document.querySelector(`[data-signal="${signal}"]`);
+            const isOn = card.classList.contains('on');
+            const newValue = isOn ? 0 : 1;
+
+            // 不修改卡片状态，只显示等待状态
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = `正在切换 ${signal}...`;
+            statusEl.className = 'status';
+
+            fetch('/api/set_signal', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    signal: signal,
+                    value: newValue
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    statusEl.textContent = `${signal} 已设置为 ${newValue === 1 ? '开' : '关'}`;
+                    statusEl.className = 'status success';
+                } else {
+                    statusEl.textContent = `设置失败: ${data.message}`;
+                    statusEl.className = 'status error';
+                }
+                // 立即重新读取信号值来更新 UI
+                fetchSignals();
+            })
+            .catch(error => {
+                statusEl.textContent = `请求失败: ${error}`;
+                statusEl.className = 'status error';
+                // 立即重新读取信号值来更新 UI
+                fetchSignals();
+            });
+        }
+    </script>
+</body>
+</html>
