@@ -4,23 +4,35 @@
 
 import os
 import sys
+import threading
 
 # 设置环境变量让 Python 使用 UTF-8
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 # 重新配置 stdin/stdout/stderr
 if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    # 使用 reconfigure 保留控制台流的原始缓冲策略，避免替换流对象导致输出异常
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(
+            encoding='utf-8',
+            errors='replace',
+            line_buffering=True,
+            write_through=True,
+        )
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(
+            encoding='utf-8',
+            errors='replace',
+            line_buffering=True,
+            write_through=True,
+        )
 
 import time
 import logging
 
-# 禁用所有日志
-logging.disable(logging.CRITICAL)
-
 from py_canoe import CANoe
+
+LOGGER = logging.getLogger(__name__)
 
 # CANoe 工程配置
 CANOE_CFG = r"D:\File\temp\Chery_Lamp_Control_Test_5.0_V1.7\Lamp_Control_5.0.cfg"
@@ -41,6 +53,50 @@ LIGHT_SIGNALS = {
 }
 
 
+_CANOE_LOCK = threading.Lock()
+_CANOE_SESSION = {
+    "client": None,
+    "attached": False,
+    "measurement_started": False,
+}
+
+
+def _reset_canoe_session():
+    """重置 CANoe 会话状态，在连接异常后触发重连。"""
+    _CANOE_SESSION["client"] = None
+    _CANOE_SESSION["attached"] = False
+    _CANOE_SESSION["measurement_started"] = False
+
+
+def _get_canoe_client() -> CANoe:
+    """
+    获取可用的 CANoe 客户端（惰性初始化 + 会话复用）。
+
+    Returns:
+        CANoe: 已连接并确保测量已启动的客户端实例
+    """
+    canoe = _CANOE_SESSION["client"]
+    if canoe is None:
+        canoe = CANoe()
+        _CANOE_SESSION["client"] = canoe
+        _CANOE_SESSION["attached"] = False
+        _CANOE_SESSION["measurement_started"] = False
+
+    try:
+        if not _CANOE_SESSION["attached"]:
+            canoe.attach_to_active_application()
+            _CANOE_SESSION["attached"] = True
+
+        if not _CANOE_SESSION["measurement_started"]:
+            canoe.start_measurement()
+            _CANOE_SESSION["measurement_started"] = True
+
+        return canoe
+    except Exception as e:
+        _reset_canoe_session()
+        raise RuntimeError(f"无法连接 CANoe 或启动测量: {e}") from e
+
+
 def get_light_signal(signal_name: str) -> int:
     """
     读取灯光信号值
@@ -55,21 +111,19 @@ def get_light_signal(signal_name: str) -> int:
         print(f"错误: 未知的信号名 {signal_name}")
         return -1
 
-    canoe = CANoe()
     try:
-        canoe.attach_to_active_application()
-        canoe.start_measurement()
-
-        value = canoe.get_signal_value(
-            bus=BUS,
-            channel=CHANNEL,
-            message=MESSAGE,
-            signal=signal_name,
-            raw_value=False
-        )
-        return int(value)
-
+        with _CANOE_LOCK:
+            canoe = _get_canoe_client()
+            value = canoe.get_signal_value(
+                bus=BUS,
+                channel=CHANNEL,
+                message=MESSAGE,
+                signal=signal_name,
+                raw_value=False
+            )
+            return int(value)
     except Exception as e:
+        LOGGER.exception("读取信号失败: %s", signal_name)
         print(f"读取失败: {e}")
         return -1
 
@@ -81,11 +135,10 @@ def get_all_light_signals() -> dict:
     Returns:
         dict: {信号名: 值}，读取失败的信号值为 -1
     """
-    result = {}
-    canoe = CANoe()
-    try:
-        canoe.attach_to_active_application()
-        canoe.start_measurement()
+    with _CANOE_LOCK:
+        canoe = _get_canoe_client()
+        result = {}
+        failed_count = 0
 
         # 一次连接读取所有信号
         for signal_name in LIGHT_SIGNALS.keys():
@@ -100,13 +153,14 @@ def get_all_light_signals() -> dict:
                 result[signal_name] = int(value)
             except Exception:
                 result[signal_name] = -1
+                failed_count += 1
 
-    except Exception:
-        # 连接失败时返回所有信号为 -1
-        for signal_name in LIGHT_SIGNALS.keys():
-            result[signal_name] = -1
+        # 全部失败时触发会话重建，并向上抛错给 API 返回失败信息
+        if failed_count == len(LIGHT_SIGNALS):
+            _reset_canoe_session()
+            raise RuntimeError("读取所有信号失败，请检查 CANoe 是否运行并已开始测量")
 
-    return result
+        return result
 
 
 def set_light_signal(signal_name: str, value: int) -> bool:
@@ -124,25 +178,23 @@ def set_light_signal(signal_name: str, value: int) -> bool:
         print(f"错误: 未知的信号名 {signal_name}")
         return False
 
-    canoe = CANoe()
-    try:
-        canoe.attach_to_active_application()
-        canoe.start_measurement()
-
-        canoe.set_signal_value(
-            bus=BUS,
-            channel=CHANNEL,
-            message=MESSAGE,
-            signal=signal_name,
-            value=value,
-            raw_value=False
-        )
-        print(f"已设置 {MESSAGE}.{signal_name} = {value}")
-        return True
-
-    except Exception as e:
-        print(f"设置失败: {e}")
-        return False
+    with _CANOE_LOCK:
+        canoe = _get_canoe_client()
+        try:
+            canoe.set_signal_value(
+                bus=BUS,
+                channel=CHANNEL,
+                message=MESSAGE,
+                signal=signal_name,
+                value=value,
+                raw_value=False
+            )
+            print(f"已设置 {MESSAGE}.{signal_name} = {value}")
+            return True
+        except Exception as e:
+            # 写入失败时重置会话，避免后续继续使用失效连接
+            _reset_canoe_session()
+            raise RuntimeError(f"设置信号失败: {e}") from e
 
 
 # 保留旧接口的信号名

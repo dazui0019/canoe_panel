@@ -150,6 +150,11 @@
             opacity: 0.5;
             pointer-events: none;
         }
+
+        .signal-card.loading {
+            opacity: 0.6;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
@@ -181,31 +186,57 @@
     </div>
 
     <script>
-        // 页面加载时获取所有信号状态
+        const POLL_INTERVAL_MS = 1000;
+        let pollTimer = null;
+        let isFetching = false;
+        let isToggling = false;
+
+        function setStatus(text, cls = 'status') {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = text;
+            statusEl.className = cls;
+        }
+
+        // 页面加载时启动串行轮询，避免请求叠加
         document.addEventListener('DOMContentLoaded', function() {
-            fetchSignals();
+            startPolling();
         });
 
-        // 定期刷新信号状态 (每500毫秒)
-        setInterval(fetchSignals, 500);
+        async function fetchSignals(options = {}) {
+            const silent = options.silent === true;
+            if (isFetching || isToggling) {
+                return;
+            }
 
-        function fetchSignals() {
-            fetch('/api/get_all_signals')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        updateButtons(data.signals);
-                        document.getElementById('status').textContent = '状态已更新';
-                        document.getElementById('status').className = 'status';
-                    } else {
-                        document.getElementById('status').textContent = '读取失败: ' + data.message;
-                        document.getElementById('status').className = 'status error';
+            isFetching = true;
+            try {
+                const response = await fetch('/api/get_all_signals', { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.message || `HTTP ${response.status}`);
+                }
+
+                if (data.success) {
+                    updateButtons(data.signals);
+                    if (!silent) {
+                        setStatus('状态已更新');
                     }
-                })
-                .catch(error => {
-                    document.getElementById('status').textContent = '请求失败: ' + error;
-                    document.getElementById('status').className = 'status error';
-                });
+                } else {
+                    setStatus('读取失败: ' + (data.message || '未知错误'), 'status error');
+                }
+            } catch (error) {
+                setStatus('请求失败: ' + (error.message || error), 'status error');
+            } finally {
+                isFetching = false;
+            }
+        }
+
+        function startPolling() {
+            const tick = async () => {
+                await fetchSignals();
+                pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+            };
+            tick();
         }
 
         function updateButtons(signals) {
@@ -221,44 +252,49 @@
             }
         }
 
-        function toggleSignal(signal) {
+        async function toggleSignal(signal) {
+            if (isToggling) {
+                return;
+            }
+
             const card = document.querySelector(`[data-signal="${signal}"]`);
+            if (!card) {
+                return;
+            }
             const isOn = card.classList.contains('on');
             const newValue = isOn ? 0 : 1;
 
             // 不修改卡片状态，只显示等待状态
-            const statusEl = document.getElementById('status');
-            statusEl.textContent = `正在切换 ${signal}...`;
-            statusEl.className = 'status';
+            isToggling = true;
+            card.classList.add('loading');
+            setStatus(`正在切换 ${signal}...`);
 
-            fetch('/api/set_signal', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    signal: signal,
-                    value: newValue
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    statusEl.textContent = `${signal} 已设置为 ${newValue === 1 ? '开' : '关'}`;
-                    statusEl.className = 'status success';
-                } else {
-                    statusEl.textContent = `设置失败: ${data.message}`;
-                    statusEl.className = 'status error';
+            try {
+                const response = await fetch('/api/set_signal', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        signal: signal,
+                        value: newValue
+                    })
+                });
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    throw new Error(data.message || `HTTP ${response.status}`);
                 }
+
+                setStatus(`${signal} 已设置为 ${newValue === 1 ? '开' : '关'}`, 'status success');
+            } catch (error) {
+                setStatus(`设置失败: ${error.message || error}`, 'status error');
+            } finally {
+                card.classList.remove('loading');
+                isToggling = false;
                 // 立即重新读取信号值来更新 UI
-                fetchSignals();
-            })
-            .catch(error => {
-                statusEl.textContent = `请求失败: ${error}`;
-                statusEl.className = 'status error';
-                // 立即重新读取信号值来更新 UI
-                fetchSignals();
-            });
+                await fetchSignals({ silent: true });
+            }
         }
     </script>
 </body>

@@ -2,10 +2,19 @@
 Flask Web 服务器 - CANoe 灯光控制
 """
 
+import os
+
 from flask import Flask, render_template, request, jsonify
 from main import set_light_signal, get_all_light_signals, LIGHT_SIGNALS
 
 app = Flask(__name__)
+
+
+def _is_true_env(value: str | None, default: bool = False) -> bool:
+    """解析环境变量中的布尔值。"""
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @app.route("/")
@@ -60,9 +69,9 @@ def api_set_signal():
             "message": "错误信息(如果失败)"
         }
     """
-    data = request.get_json()
+    data = request.get_json(silent=True)
 
-    if not data:
+    if not isinstance(data, dict):
         return jsonify({"success": False, "message": "无效的请求数据"}), 400
 
     signal_name = data.get("signal")
@@ -75,8 +84,8 @@ def api_set_signal():
         return jsonify({"success": False, "message": "缺少 value 参数"}), 400
     if signal_name not in LIGHT_SIGNALS:
         return jsonify({"success": False, "message": f"未知的信号: {signal_name}"}), 400
-    if value not in (0, 1):
-        return jsonify({"success": False, "message": "value 必须是 0 或 1"}), 400
+    if isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1):
+        return jsonify({"success": False, "message": "value 必须是整数 0 或 1"}), 400
 
     # 设置信号值
     try:
@@ -90,10 +99,16 @@ def api_set_signal():
 
 
 if __name__ == "__main__":
-    print("=" * 50)
-    print("CANoe 灯光控制 Web 服务")
-    print("=" * 50)
-    print("请确保 CANoe 已启动并加载配置")
-    print("访问 http://127.0.0.1:5000 打开控制页面")
-    print("=" * 50)
-    app.run(debug=True, host="127.0.0.1", port=5000)
+    debug_mode = _is_true_env(os.environ.get("FLASK_DEBUG"), default=True)
+    is_reloader_process = os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+
+    # debug 模式下仅在重载后的服务进程打印一次
+    if (not debug_mode) or is_reloader_process:
+        print("=" * 50, flush=True)
+        print("CANoe 灯光控制 Web 服务", flush=True)
+        print("=" * 50, flush=True)
+        print("请确保 CANoe 已启动并加载配置", flush=True)
+        print("访问 http://127.0.0.1:5000 打开控制页面", flush=True)
+        print("=" * 50, flush=True)
+
+    app.run(debug=debug_mode, host="127.0.0.1", port=5000, threaded=False)
